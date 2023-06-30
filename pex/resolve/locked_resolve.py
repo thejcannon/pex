@@ -10,7 +10,7 @@ from functools import total_ordering
 
 from pex.common import pluralize
 from pex.compatibility import url_unquote, urlparse
-from pex.dist_metadata import DistMetadata, Requirement
+from pex.dist_metadata import DistMetadata, ProjectNameAndVersion, Requirement
 from pex.enum import Enum
 from pex.orderedset import OrderedSet
 from pex.pep_425 import CompatibilityTags, TagRank
@@ -252,6 +252,45 @@ class LockedRequirement(object):
             requires_dists=SortedTuple(requires_dists, key=str),
             requires_python=requires_python,
             additional_artifacts=SortedTuple(additional_artifacts),
+        )
+
+    @classmethod
+    def from_pip_report(
+        cls,
+        install,  # type: Dict[str, Any]
+    ):
+        # type: (...) -> LockedRequirement
+
+        # See https://pip.pypa.io/en/stable/reference/installation-report/
+        metadata = install["metadata"]
+        pin = Pin.canonicalize(ProjectNameAndVersion(project_name=metadata["name"], version=metadata["version"]))
+
+        download_info = install["download_info"]
+        url = download_info["url"]
+        verified = True  # Ummmm
+        if "vcs_info" in download_info:
+            assert False, "FUCK!"
+            artifact = VCSArtifact(
+                url=url,
+                fingerprint=fingerprint,
+                verified=verified,
+                vcs=artifact_url.scheme.vcs,
+            )
+        else:
+            archive_info = download_info["archive_info"]
+            # TODO: Make less assumptions here, maybe `next(archive_info["hashes"].items())`?
+            fingerprint = Fingerprint(algorithm="sha256", hash=archive_info["hashes"]["sha256"])
+            artifact = Artifact.from_url(url, fingerprint, verified)
+
+        requires_python = metadata.get("required_python")
+        return cls(
+            pin=pin,
+            artifact=artifact,
+            requires_dists=SortedTuple([
+                Requirement.parse(req) for req in metadata.get("requires_dist", [])
+            ], key=str),
+            requires_python=SpecifierSet(requires_python) if requires_python else None,
+            additional_artifacts=SortedTuple([]),
         )
 
     pin = attr.ib()  # type: Pin

@@ -145,5 +145,13 @@ class PipVersion(Enum["PipVersionValue"]):
         requires_python=">=3.7",
     )
 
+    v23_3_2_dev0 = PipVersionValue(
+        name="23.2.dev0",
+        version="23.2.dev0",
+        requirement=(
+            "pip @ git+https://github.com/pypa/pip@778b42ff81c00e914a397eb8ed56d516e00509db"
+        ),
+    )
+
     VENDORED = v20_3_4_patched
     LATEST = LatestPipVersion()

@@ -6,6 +6,7 @@ from __future__ import absolute_import
 import os
 import shutil
 import tarfile
+import json
 from collections import OrderedDict, defaultdict
 from multiprocessing.pool import ThreadPool
 
@@ -28,6 +29,7 @@ from pex.resolve.locked_resolve import (
     FileArtifact,
     LocalProjectArtifact,
     LockConfiguration,
+    LockedRequirement,
     LockedResolve,
     LockStyle,
     VCSArtifact,
@@ -38,12 +40,13 @@ from pex.resolve.lockfile.model import Lockfile
 from pex.resolve.pep_691.fingerprint_service import FingerprintService
 from pex.resolve.requirement_configuration import RequirementConfiguration
 from pex.resolve.resolved_requirement import Pin, ResolvedRequirement
-from pex.resolve.resolver_configuration import PipConfiguration
+from pex.resolve.resolver_configuration import PipConfiguration, ResolverVersion
 from pex.resolve.resolvers import Resolver
 from pex.resolver import BuildRequest, Downloaded, ResolveObserver, WheelBuilder
 from pex.result import Error, try_
 from pex.targets import Target, Targets
 from pex.tracer import TRACER
+from pex.sorted_tuple import SortedTuple
 from pex.typing import TYPE_CHECKING
 from pex.version import __version__
 
@@ -371,34 +374,20 @@ def create(
     )
 
     configured_resolver = ConfiguredResolver(pip_configuration=pip_configuration)
-    lock_observer = LockObserver(
-        root_requirements=parsed_requirements,
-        lock_configuration=lock_configuration,
-        resolver=configured_resolver,
-        wheel_builder=WheelBuilder(
-            package_index_configuration=package_index_configuration,
-            prefer_older_binary=pip_configuration.prefer_older_binary,
-            use_pep517=pip_configuration.use_pep517,
-            build_isolation=pip_configuration.build_isolation,
-            pip_version=pip_configuration.version,
-            resolver=configured_resolver,
-        ),
-        package_index_configuration=package_index_configuration,
-        max_parallel_jobs=pip_configuration.max_jobs,
-    )
-
-    download_dir = safe_mkdtemp()
 
     if lock_configuration.style is LockStyle.UNIVERSAL:
-        download_targets = (
+        resolve_targets = (
             Targets(interpreters=(targets.interpreter,)) if targets.interpreter else Targets()
         )
     else:
-        download_targets = targets
+        resolve_targets = targets
 
-    try:
-        downloaded = resolver.download(
-            targets=download_targets,
+    result_dir = safe_mkdtemp()
+
+    # NB: `--report` and the legacy resolver don't like each other: https://github.com/pypa/pip/issues/12114
+    if pip_configuration.version.version.parsed_version.major >= 23 and pip_configuration.resolver_version != ResolverVersion.PIP_LEGACY:  # type: ignore[union-attr]
+        report_results = resolver.dry_run_report(
+            targets=resolve_targets,
             requirements=requirement_configuration.requirements,
             requirement_files=requirement_configuration.requirement_files,
             constraint_files=requirement_configuration.constraint_files,
@@ -415,23 +404,90 @@ def create(
             use_pep517=pip_configuration.use_pep517,
             build_isolation=pip_configuration.build_isolation,
             max_parallel_jobs=pip_configuration.max_jobs,
-            observer=lock_observer,
-            dest=download_dir,
+            report_dir=result_dir,
             preserve_log=pip_configuration.preserve_log,
             pip_version=pip_configuration.version,
             resolver=configured_resolver,
         )
-    except resolvers.ResolveError as e:
-        return Error(str(e))
 
-    with TRACER.timed("Creating lock from resolve"):
-        locked_resolves = lock_observer.lock(downloaded)
+        def get_locked_requirements(
+                report_path,  # type: str
+        ):
+            # type: (...) -> SortedTuple[LockedRequirement]
+            with open(report_path) as report_file:
+                report = json.load(report_file)
 
-    with TRACER.timed("Indexing downloads"):
-        create_lock_download_manager = CreateLockDownloadManager.create(
-            download_dir=download_dir, locked_resolves=locked_resolves
+            # Error if not version=1?
+            return SortedTuple(
+                LockedRequirement.from_pip_report(item)
+                for item in report["install"]
+            )
+
+
+        locked_resolves = tuple(
+            LockedResolve(
+                locked_requirements = get_locked_requirements(report_result.report_path),
+                platform_tag=None
+                if lock_configuration.style == LockStyle.UNIVERSAL
+                else report_result.target.platform.tag,
+            )
+            for report_result in report_results
         )
-        create_lock_download_manager.store_all()
+
+    else:
+        lock_observer = LockObserver(
+            root_requirements=parsed_requirements,
+            lock_configuration=lock_configuration,
+            resolver=configured_resolver,
+            wheel_builder=WheelBuilder(
+                package_index_configuration=package_index_configuration,
+                prefer_older_binary=pip_configuration.prefer_older_binary,
+                use_pep517=pip_configuration.use_pep517,
+                build_isolation=pip_configuration.build_isolation,
+                pip_version=pip_configuration.version,
+                resolver=configured_resolver,
+            ),
+            package_index_configuration=package_index_configuration,
+            max_parallel_jobs=pip_configuration.max_jobs,
+        )
+
+        try:
+            downloaded = resolver.download(
+                targets=resolve_targets,
+                requirements=requirement_configuration.requirements,
+                requirement_files=requirement_configuration.requirement_files,
+                constraint_files=requirement_configuration.constraint_files,
+                allow_prereleases=pip_configuration.allow_prereleases,
+                transitive=pip_configuration.transitive,
+                indexes=pip_configuration.repos_configuration.indexes,
+                find_links=pip_configuration.repos_configuration.find_links,
+                resolver_version=pip_configuration.resolver_version,
+                network_configuration=network_configuration,
+                password_entries=pip_configuration.repos_configuration.password_entries,
+                build=pip_configuration.allow_builds,
+                use_wheel=pip_configuration.allow_wheels,
+                prefer_older_binary=pip_configuration.prefer_older_binary,
+                use_pep517=pip_configuration.use_pep517,
+                build_isolation=pip_configuration.build_isolation,
+                max_parallel_jobs=pip_configuration.max_jobs,
+                observer=lock_observer,
+                dest=result_dir,
+                preserve_log=pip_configuration.preserve_log,
+                pip_version=pip_configuration.version,
+                resolver=configured_resolver,
+            )
+        except resolvers.ResolveError as e:
+            return Error(str(e))
+
+        with TRACER.timed("Creating lock from resolve"):
+            locked_resolves = lock_observer.lock(downloaded)
+
+        with TRACER.timed("Indexing downloads"):
+            create_lock_download_manager = CreateLockDownloadManager.create(
+                download_dir=result_dir, locked_resolves=locked_resolves
+            )
+            create_lock_download_manager.store_all()
+
 
     lock = Lockfile.create(
         pex_version=__version__,

@@ -381,23 +381,23 @@ class Pip(object):
         )
         return Job(command=command, process=process, finalizer=finalizer)
 
-    def spawn_download_distributions(
+    def _spawn_resolve_distribution(
         self,
-        download_dir,  # type: str
-        requirements=None,  # type: Optional[Iterable[str]]
-        requirement_files=None,  # type: Optional[Iterable[str]]
-        constraint_files=None,  # type: Optional[Iterable[str]]
-        allow_prereleases=False,  # type: bool
-        transitive=True,  # type: bool
-        target=None,  # type: Optional[Target]
-        package_index_configuration=None,  # type: Optional[PackageIndexConfiguration]
-        build=True,  # type: bool
-        use_wheel=True,  # type: bool
-        prefer_older_binary=False,  # type: bool
-        use_pep517=None,  # type: Optional[bool]
-        build_isolation=True,  # type: bool
-        observer=None,  # type: Optional[DownloadObserver]
-        preserve_log=False,  # type: bool
+        pip_cmd,  # type: Iterable[str]
+        requirements,  # type: Optional[Iterable[str]]
+        requirement_files,  # type: Optional[Iterable[str]]
+        constraint_files,  # type: Optional[Iterable[str]]
+        allow_prereleases,  # type: bool
+        transitive,  # type: bool
+        target,  # type: Optional[Target]
+        package_index_configuration,  # type: Optional[PackageIndexConfiguration]
+        build,  # type: bool
+        use_wheel,  # type: bool
+        prefer_older_binary,  # type: bool
+        use_pep517,  # type: Optional[bool]
+        build_isolation,  # type: bool
+        observer,  # type: Optional[DownloadObserver]
+        preserve_log,  # type: bool
     ):
         # type: (...) -> Job
         target = target or targets.current()
@@ -414,41 +414,41 @@ class Pip(object):
                     "{}".format(target.platform)
                 )
 
-        download_cmd = ["download", "--dest", download_dir]
+        pip_cmd = [*pip_cmd]
         extra_env = {}  # type: Dict[str, str]
 
         if not build:
-            download_cmd.extend(["--only-binary", ":all:"])
+            pip_cmd.extend(["--only-binary", ":all:"])
 
         if not use_wheel:
-            download_cmd.extend(["--no-binary", ":all:"])
+            pip_cmd.extend(["--no-binary", ":all:"])
 
         if prefer_older_binary:
-            download_cmd.append("--prefer-binary")
+            pip_cmd.append("--prefer-binary")
 
         if use_pep517 is not None:
-            download_cmd.append("--use-pep517" if use_pep517 else "--no-use-pep517")
+            pip_cmd.append("--use-pep517" if use_pep517 else "--no-use-pep517")
 
         if not build_isolation:
-            download_cmd.append("--no-build-isolation")
+            pip_cmd.append("--no-build-isolation")
             extra_env.update(PEP517_BACKEND_PATH=os.pathsep.join(sys.path))
 
         if allow_prereleases:
-            download_cmd.append("--pre")
+            pip_cmd.append("--pre")
 
         if not transitive:
-            download_cmd.append("--no-deps")
+            pip_cmd.append("--no-deps")
 
         if requirement_files:
             for requirement_file in requirement_files:
-                download_cmd.extend(["--requirement", requirement_file])
+                pip_cmd.extend(["--requirement", requirement_file])
 
         if constraint_files:
             for constraint_file in constraint_files:
-                download_cmd.extend(["--constraint", constraint_file])
+                pip_cmd.extend(["--constraint", constraint_file])
 
         if requirements:
-            download_cmd.extend(requirements)
+            pip_cmd.extend(requirements)
 
         foreign_platform_observer = foreign_platform.patch(target)
         if (
@@ -502,7 +502,7 @@ class Pip(object):
                     V=ENV.PEX_VERBOSE,
                 )
 
-            download_cmd = ["--log", log] + download_cmd
+            pip_cmd = ["--log", log] + pip_cmd
             # N.B.: The `pip -q download ...` command is quiet but
             # `pip -q --log log.txt download ...` leaks download progress bars to stdout. We work
             # around this by sending stdout to the bit bucket.
@@ -540,7 +540,7 @@ class Pip(object):
             )
 
         command, process = self._spawn_pip_isolated(
-            download_cmd,
+            pip_cmd,
             package_index_configuration=package_index_configuration,
             interpreter=target.get_interpreter(),
             pip_verbosity=0,
@@ -553,6 +553,80 @@ class Pip(object):
             )
         else:
             return Job(command, process)
+
+    def spawn_download_distributions(
+        self,
+        download_dir,  # type: str
+        requirements=None,  # type: Optional[Iterable[str]]
+        requirement_files=None,  # type: Optional[Iterable[str]]
+        constraint_files=None,  # type: Optional[Iterable[str]]
+        allow_prereleases=False,  # type: bool
+        transitive=True,  # type: bool
+        target=None,  # type: Optional[Target]
+        package_index_configuration=None,  # type: Optional[PackageIndexConfiguration]
+        build=True,  # type: bool
+        use_wheel=True,  # type: bool
+        prefer_older_binary=False,  # type: bool
+        use_pep517=None,  # type: Optional[bool]
+        build_isolation=True,  # type: bool
+        observer=None,  # type: Optional[DownloadObserver]
+        preserve_log=False,  # type: bool
+    ):
+        # type: (...) -> Job
+        return self._spawn_resolve_distribution(
+            ["download", "--dest", download_dir],
+            requirements,
+            requirement_files,
+            constraint_files,
+            allow_prereleases,
+            transitive,
+            target,
+            package_index_configuration,
+            build,
+            use_wheel,
+            prefer_older_binary,
+            use_pep517,
+            build_isolation,
+            observer,
+            preserve_log,
+        )
+
+    def spawn_install_report_distributions(
+        self,
+        report_path,  # type: str
+        requirements=None,  # type: Optional[Iterable[str]]
+        requirement_files=None,  # type: Optional[Iterable[str]]
+        constraint_files=None,  # type: Optional[Iterable[str]]
+        allow_prereleases=False,  # type: bool
+        transitive=True,  # type: bool
+        target=None,  # type: Optional[Target]
+        package_index_configuration=None,  # type: Optional[PackageIndexConfiguration]
+        build=True,  # type: bool
+        use_wheel=True,  # type: bool
+        prefer_older_binary=False,  # type: bool
+        use_pep517=None,  # type: Optional[bool]
+        build_isolation=True,  # type: bool
+        preserve_log=False,  # type: bool
+    ):
+        # type: (...) -> Job
+        return self._spawn_resolve_distribution(
+            # @TODO: DO we need `--ignore-installed` or similar?
+            ["install", "--ignore-installed", "--dry-run", "--report", report_path],
+            requirements,
+            requirement_files,
+            constraint_files,
+            allow_prereleases,
+            transitive,
+            target,
+            package_index_configuration,
+            build,
+            use_wheel,
+            prefer_older_binary,
+            use_pep517,
+            build_isolation,
+            None,
+            preserve_log,
+        )
 
     def spawn_build_wheels(
         self,

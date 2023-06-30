@@ -1305,3 +1305,122 @@ def download(
             )
 
     return Downloaded(local_distributions=tuple(local_distributions))
+
+
+@attr.s(frozen=True)
+class DryRunReportResult(object):
+    target = attr.ib()  # type: Target
+    report_path = attr.ib()  # type: str
+
+def _dry_run_install_with_report(
+    report_dir,  # type: str
+    requirements,  # type: Optional[Iterable[str]]
+    requirement_files,  # type: Optional[Iterable[str]]
+    constraint_files,  # type: Optional[Iterable[str]]
+    allow_prereleases,  # type: bool
+    transitive,  # type: bool
+    build,  # type: bool
+    use_wheel,  # type: bool
+    prefer_older_binary,  # type: bool
+    use_pep517,  # type: Optional[bool]
+    build_isolation,  # type: bool
+    preserve_log,  # type: bool
+    resolver,  # type: Optional[Resolver]
+    package_index_configuration,  # type: PackageIndexConfiguration
+    target,  # type: Target
+):
+    # type: (...) -> SpawnedJob[DryRunReportResult]
+    report_path = os.path.join(report_dir, target.id)
+    result = DryRunReportResult(target, report_path)
+    job = get_pip(
+        interpreter=target.get_interpreter(),
+        version=package_index_configuration.pip_version,
+        resolver=resolver,
+    ).spawn_install_report_distributions(
+        report_path,
+        requirements=requirements,
+        requirement_files=requirement_files,
+        constraint_files=constraint_files,
+        allow_prereleases=allow_prereleases,
+        transitive=transitive,
+        target=target,
+        package_index_configuration=package_index_configuration,
+        build=build,
+        use_wheel=use_wheel,
+        prefer_older_binary=prefer_older_binary,
+        use_pep517=use_pep517,
+        build_isolation=build_isolation,
+        preserve_log=preserve_log,
+    )
+    return SpawnedJob.wait(job=job, result=result)
+
+
+def dry_run_report(
+    targets=Targets(),  # type: Targets
+    requirements=None,  # type: Optional[Iterable[str]]
+    requirement_files=None,  # type: Optional[Iterable[str]]
+    constraint_files=None,  # type: Optional[Iterable[str]]
+    allow_prereleases=False,  # type: bool
+    transitive=True,  # type: bool
+    indexes=None,  # type: Optional[Sequence[str]]
+    find_links=None,  # type: Optional[Sequence[str]]
+    resolver_version=None,  # type: Optional[ResolverVersion.Value]
+    network_configuration=None,  # type: Optional[NetworkConfiguration]
+    password_entries=(),  # type: Iterable[PasswordEntry]
+    build=True,  # type: bool
+    use_wheel=True,  # type: bool
+    prefer_older_binary=False,  # type: bool
+    use_pep517=None,  # type: Optional[bool]
+    build_isolation=True,  # type: bool
+    report_dir=None,
+    max_parallel_jobs=None,  # type: Optional[int]
+    preserve_log=False,  # type: bool
+    pip_version=PipVersion.VENDORED,  # type: PipVersionValue
+    resolver=None,  # type: Optional[Resolver]
+):
+    # type: (...) -> Iterable[DryRunReportResult]
+    direct_requirements = _parse_reqs(requirements, requirement_files, network_configuration)
+    # @TODO: What tp dp with direct requirements?
+    package_index_configuration = PackageIndexConfiguration.create(
+        pip_version=pip_version,
+        resolver_version=resolver_version,
+        indexes=indexes,
+        find_links=find_links,
+        network_configuration=network_configuration,
+        password_entries=password_entries,
+    )
+    unique_targets = targets.unique_targets()
+
+    if not requirements and not requirement_files:
+        # Nothing to resolve.
+        return []
+
+    spawn_report = functools.partial(
+        _dry_run_install_with_report,
+        report_dir,
+        requirements,
+        requirement_files,
+        constraint_files,
+        allow_prereleases,
+        transitive,
+        build,
+        use_wheel,
+        prefer_older_binary,
+        use_pep517,
+        build_isolation,
+        preserve_log,
+        resolver,
+        package_index_configuration,
+    )
+    with TRACER.timed("Resolving for:\n  {}".format("\n  ".join(map(str, unique_targets)))):
+        return list(
+            execute_parallel(
+                inputs=unique_targets,
+                spawn_func=spawn_report,
+                error_handler=Raise[Target, DryRunReportResult](Unsatisfiable),
+                max_jobs=max_parallel_jobs,
+            )
+        )
+
+
+
